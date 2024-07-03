@@ -1,0 +1,278 @@
+---
+title: "-upRampFinder"
+output: html_document
+---
+
+
+
+```{r}
+# SCRIPT 3/3 - detect ON-periods in trajectories and extract their features
+#
+##### upRampFinder for a whole directory  ######
+################################################
+# Identifies peak maxima and minima of three different strengths and hence creates a list of ON-periods
+## INPUT: folder with directoreis corresponding to individual biological replicates, each containing subdirs with trace2.csv with a trace (same as used in SCRIPT 2). 
+# OUTPUT: ON period amplitude, duration, and slope (Pol2 reinitiation rates) in individual .csv files saved to the same location where output of SCRIPT2
+# CAUTION: you'll have to provide single mRNA intensity measured for your system.
+
+###########################################################
+library(xfun); library(dplyr);                            #
+data<-'C:/Results/MS2/MOVIES/DATA PROCESSING/20240509 R3' # @USER - here provide data folder
+dt<-4#min,                                                #change it if different time interval was used
+premRNA.int<-330#a.u.                                     #intensity of single pre-mRNA in Klose lab: see Ext. Data Fig.3d
+###########################################################
+
+n <- 3 # parameter looking at 3 degrees of maxima strength
+inflect <- function(x, threshold = 1){
+  up   <- sapply(1:threshold, function(n) c(x[-(seq(n))], rep(NA, n)))
+  down <-  sapply(-1:-threshold, function(n) c(rep(NA,abs(n)), x[-seq(length(x), length(x) - abs(n) + 1)]))
+  a    <- cbind(x,up,down)
+  list(minima = which(apply(a, 1, min) == a[,1]), maxima = which(apply(a, 1, max) == a[,1]))}
+
+#### LOOP OVER SUBDIRS (b increment) and SUBSUBDIRS (f increment): ####
+folder.names <- list.dirs(data, full.names = TRUE, recursive = FALSE) 
+for(b in 1:length(folder.names)){      # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+  subfolder.names <- list.dirs(folder.names[b], full.names = TRUE, recursive = FALSE) 
+  for(f in 1:length(subfolder.names)){ 
+  
+  #trace<-data$Intdensity
+  trace <- read.csv(paste(subfolder.names[f], "/trace2.csv", sep=""))
+  ### New photobleaching correction: 29-06-2021, and it is not entirely correct 13-11-2021:
+
+  trace <-(1/exp(-0.005*trace$X))*trace$Intdensity # @USER: this is photobleaching correction estimated for data in Klose lab - you need yours!
+  
+  
+bottoms <- lapply(1:n, function(x) inflect(trace, threshold = x)$minima) # list of local minima
+tops <- lapply(1:n, function(x) inflect(trace, threshold = x)$maxima)    # list of local maxima
+# Color functions:
+cf.1 <- grDevices::colorRampPalette(c("pink","red"))
+cf.2 <- grDevices::colorRampPalette(c("cyan","blue"))
+
+# Plot full trace:
+png(file=paste(subfolder.names[f], "/TS_trace_with_MAXs&MINs.jpg", sep=""), width = 750, height = 450)
+plot(trace, type = 'l', main = "Minima & Maxima\nVariable Thresholds")
+for(i in 1:n){
+  points(bottoms[[i]], trace[bottoms[[i]]], pch = 16, col = cf.1(n)[i], cex = i/1.5)}
+for(i in 1:n){
+  points(tops[[i]], trace[tops[[i]]], pch = 16, col = cf.2(n)[i], cex = i/1.5)}
+legend("topleft", legend = c("Minima",1:n,"Maxima",1:n), 
+       pch = rep(c(NA, rep(16,n)), 2), col = c(1, cf.1(n),1, cf.2(n)), 
+       pt.cex =  c(rep(c(1, c(1:n) / 1.5), 2)), cex = .75, ncol = 2)
+dev.off()
+
+if (length(tops[[3]])==0){print("NO MAXIMA WERE FOUND!!!")}
+if (length(bottoms[[3]])==0){print("NO MINIMA WERE FOUND!!!")}
+# print(paste("NO MINIMA WERE FOUND!!!", name of file))  # <- use this one to indicate name of file as well!
+
+
+
+#### PREPARATION OF BASIC MAXIMA AND MINIMA LISTS BASED ON WHICH EVERYTHING IS CALCULATED ####                # to avoid lack of mins between maxs
+ # here new minima will be added (after they will be sorted increasingly), change names to the same so that rbind can be used!
+ burst.min<-data.frame(bottoms[[3]]);  names(burst.min)[1]  <- "val";  
+    
+    burst.max3<-data.frame(tops[[3]]); names(burst.max3)[1] <- "val";   # maxima are filtered for out of int=0 as then maxima are in consecutive frames
+    ## Filter burst.max3 for only non-zero intensity maxima ##
+    list.burst.int.cand<-''                                                              # makes empty list for burst sizes
+    burst.max<-tops[[3]];    # list of peaks burst sizes, SAVE IT 
+    for (y in 1:length(burst.max)){                                                      # loop over maxima to identify burst sizes
+      int.burst.max.cand<-trace[burst.max[y]]
+      list.burst.int.cand<-rbind(list.burst.int.cand, int.burst.max.cand)
+    }
+    list.burst.int.cand<-list.burst.int.cand[2:length(list.burst.int.cand),1]            # to remove first empty position for lengths to match
+    maxima.cands<-data.frame(tops[[3]],as.integer(list.burst.int.cand))                  # includes maxima of int=0, both columns as integer
+    names(maxima.cands)[1] <- "val"; names(maxima.cands)[2] <- "intensity"               # removes maxima of int=0 
+    maxima<-subset(maxima.cands, intensity!=0); 
+    burst.max3<-maxima$val; 
+ 
+ if (length(burst.max3)>1){ # $                                                          # if 2 and more maxima found in trace do: 
+ burst.max3<-data.frame(burst.max3);   names(burst.max3)[1] <- "val";     
+ burst.min3<-data.frame(bottoms[[3]]); names(burst.min3)[1] <- "val"; 
+ burst.min2<-data.frame(bottoms[[2]]); names(burst.min2)[1] <- "val";
+ burst.min1<-data.frame(bottoms[[1]]); names(burst.min1)[1] <- "val";
+
+  for (r in 2:nrow(burst.max3)-1){   
+  if (nrow(subset(burst.min3,  burst.min3 > burst.max3[r,] & burst.min3 < burst.max3[r+1,])) == 0){    # if no minimum for respective maximum found...
+      if (nrow(subset(burst.min2,  burst.min2 > burst.max3[r,] & burst.min2 < burst.max3[r+1,])) > 0){ # search for a minimum in burst.min2
+      new.minimum2 <- max(subset(burst.min2,  burst.min2 > burst.max3[r,] & burst.min2 < burst.max3[r+1,]))
+      burst.min<- rbind(burst.min, new.minimum2)                                                       # add new minimum to minima list if exists..
+      }else if (nrow(subset(burst.min2,  burst.min2 > burst.max3[r,] & burst.min2 < burst.max3[r+1,])) == 0){ # if minimum not found go down to level1:
+      new.minimum1 <- max(subset(burst.min1,  burst.min1 > burst.max3[r,] & burst.min1 < burst.max3[r+1,]))
+      burst.min<- rbind(burst.min, new.minimum1)        # NOTE: it assumes that on a level 1 there will always be a minimum found
+      }   
+  }    
+  }
+  burst.min <- burst.min %>% arrange(val)               # as the last step sort increasingly the list of final minima
+  #burst.min <- as.integer(burst.min$val)                # convert it to the same class as bottoms[[3]] would be
+ } # $  
+  burst.min <- as.integer(burst.min$val)                # convert it to the same class as bottoms[[3]] would be
+
+
+
+
+#### BURST-Amplitude EXTRACTION: ####
+
+list.burst.int.cand<-''                                                             # makes empty list for burst sizes
+burst.max<-tops[[3]];    # list of peaks burst sizes, SAVE IT 
+for (i in 1:length(burst.max)){                                                     # loop over maxima to identify burst sizes
+  int.burst.max.cand<-trace[burst.max[i]]
+  list.burst.int.cand<-rbind(list.burst.int.cand, int.burst.max.cand)
+}
+list.burst.int.cand<-list.burst.int.cand[2:length(list.burst.int.cand),1]            # to remove first empty position for lengths to match
+maxima.cands<-data.frame(tops[[3]],as.integer(list.burst.int.cand))                  # includes maxima of int=0, both columns as integer
+
+names(maxima.cands)[1] <- "MaximaTimeFrame"; names(maxima.cands)[2] <- "intensity"   # removes maxima of int=0 
+maxima<-subset(maxima.cands, intensity!=0);                                          # remove maxima of int=0
+maxima<-subset(maxima, MaximaTimeFrame>5);  # (25-09-20) - changed 7->4              # remove too early maxima, conflict with 'comparis'
+write.csv(maxima, file = paste(subfolder.names[f],"/BurstSize_inIntUnits_PRE-FILTERED.csv", sep=""))
+if (nrow(maxima)>0){   # % % %                                            # important for tracks with no maxima candidates not to crash
+  
+      # TAKES THE MAXIMA FILE AND FURTHER SELECTS BURSTS BASED ON THEIR STEEP DECAY TO THE LEFT BY COMPARING TO AVERAGE 4 POINTS THERE!
+      # It REMOVES THE ONES THAT ARE NOT AT THE CLIFF EDGE
+      maxima.final<-''
+      for (j in 1:length(maxima$intensity)){             
+      c=maxima[j,]; 
+      s<-c$MaximaTimeFrame
+      comparis = (trace[s-1]+ trace[s-2]+ trace[s-3]+ trace[s-4])/4#+trace[s-5]+trace[s-6])/6  # was mean of 6 timepoints upstream
+      if (c[2]-comparis>200){ # condition: take them as a burst ONLY if it increased by roughly 2 transcripts from, 500 is what was originally set and its a bit too stringent..
+        # (25-09-20) - Above, I changed it to comparing to only 4 upstream frame and to 200iu instead of 300iu.
+        maxima.final<-rbind(maxima.final, c)
+        }
+      }
+      if (length(maxima.final)>1){   # $ $ $ $ if no maxima identified after above filtering this crashes the program, hence conditional statement
+      maxima.final<-maxima.final[-1,]
+
+      # save filtered burst sizes in Int units:
+                                                                           
+            # set maxima intensity to the Delta(Int_max-Int_min)
+            minima.cands <- c(1, burst.min)                # list of NEW minima containing
+            #minima.cands <- c(1, bottoms[[3]])            # add 1 at a first position if the first peak to prevent from lack of minima when peak, OLD
+            list.corr.size<-''                             # list of corrected burst sizes (Int_max-Int_min)
+            list.used.minima<-''                           # list to save minima used for peak extractions
+            for (l in 1:length(maxima.final$MaximaTimeFrame)){
+            quantificator2 <- as.numeric(maxima.final[l,1])
+            mini.2<-max(subset(minima.cands, minima.cands< quantificator2))
+            maxi.2<-as.numeric(maxima.final[l,1])
+            list.corr.size<-rbind(list.corr.size, trace[maxi.2]-trace[mini.2])
+            list.used.minima<-rbind(list.used.minima, mini.2)
+            }
+            list.corr.size<-list.corr.size[-1,] # remove first empty line
+            list.used.minima<-list.used.minima[-1,] 
+            transcriptsPerBurst<-as.integer(list.corr.size)/premRNA.int                            # divide absolute bs by transcript intensity
+     
+      maxima.final<-data.frame(maxima.final, as.integer(list.corr.size), transcriptsPerBurst, as.integer(list.used.minima))      # adds a column 3,4 with absolute burst sizes - Int_min - 
+      names(maxima.final)[3] <- "Int_max-Int_min"; names(maxima.final)[4] <- "Int_max-Int_min(transcripts)"; 
+      names(maxima.final)[5] <- "Respective minimum (frame)";
+      write.csv(maxima.final, file = paste(subfolder.names[f],"/BurstSize_inIntUnits.csv", sep=""))
+      
+      
+
+  #### UP-RAMP EXTRACTION of peaks >838 (2.5x bs)  ####   
+  #####################################################
+      
+  maxima2<-read.csv(paste(subfolder.names[f],"/BurstSize_inIntUnits.csv", sep=""))            # reload, otherwise subset doesnt work
+  ramp.maxima<-subset(maxima2, intensity > 838)     # select only traces that are >2xtranscripts for linear fit and slope extraction
+                                                     # Is 1000 a bit harsh? It does not permit investigation of small bursts....
+  ramp.maxima<-subset(ramp.maxima, Int_max.Int_min > 838)   # necessary to do it again after introduction of new minima (03.Feb.2020)
+                                                            # Note: after maxima relocation the peak might not be >838a.u any more!
+  
+      # HERE A CONDITION THAT PERFORMS THIS ACTION ONLY IF MAXIMA SUITABLE FOR SLOPE ESTIMATION ARE FOUND
+      if (nrow(ramp.maxima)==0){ 
+        write.csv(ramp.maxima, file = paste(subfolder.names[f],"/EMPTYTime_between_Pol2_reinitiation_inMins_perBurst.csv", sep=""))
+      } else if (nrow(ramp.maxima)>0){  # * * *
+  
+          ## Test if ramp.maxima are not within flat-top peak (within 200 int units), if yes replaces the maxima with
+          a<-0
+          for (m in 1:length(ramp.maxima$MaximaTimeFrame)){
+            maximum.loc<-ramp.maxima[m,2]
+            maximum.int<-trace[maximum.loc]
+
+                  
+            # debugged chunk from above (2021-11-26):
+            for (z in 1:5){  # tests 5 timepoints upstream of the maximum, PROBLEM when another burst is within 5 timepoints!
+            maximum.cand.int<-trace[maximum.loc-z]
+            if (isTRUE(maximum.cand.int +350 > maximum.int) == FALSE){  # limit 250au -wrong, 300 fine, is 350 better                  
+            a<-z-1  # new numerator for  maxima shift to the slope onset, moves back to the last point when still on plateau
+                    # a will be 0 when in there is no plateau in z=1 (1 frame upstream from the peak)
+            break } }
+            
+                            
+               ramp.maxima[m,2]<-maximum.loc-a        # change maximum location and intensity accordingly.
+               ramp.maxima[m,3]<-trace[maximum.loc-a]
+               ramp.maxima[m,4]<-trace[maximum.loc-a] - trace[ramp.maxima[m,6]] # update BS in a.u. - 26-11-2021!  With this updated burst
+                                                                                # whose size is too small will be filtered out from ramps line 490
+               a<-0                                   # resets the value, otherwise it wouldnt update between bursts investigated
+          }
+      
+         ## Filter ramp.maxima for ramp estimation > 1000 burst size Intmax-min(not peak!):
+         # ramp.maxima<-subset(ramp.maxima, Int_max.Int_min > 1000)   # necessary to do it again after introduction of new minima (03.Feb.2020)
+          
+          
+  ## Extract linear fit from the up-ramp:        
+  list.slopes<-''              # empty list for slopes
+  list.absolute.burst.size<-'' # empty list for absolute burst sizes
+  list.max.location <-''       # empty list to save peak locations
+  list.delta <- ''             # empty list to save ON-time duration
+  for (k in 1:length(ramp.maxima$MaximaTimeFrame)){
+  quantificator <- as.numeric(ramp.maxima[k,2]) # <<<<<< this was before maxima.final[k,1]
+  mini<-max(subset(minima.cands, minima.cands < quantificator)) # identify the closest minimum among these on the left from k-th maximum.
+    if (mini!=1){  # condition to discard ramps beginning at minima at the first timepoint! 
+    maxi<-ramp.maxima[k,2]                            # < PROBLEM? it should be [k,1] ???????
+    delta<-maxi-mini; maxt<-dt*delta
+    up.ramp<-trace[mini: maxi] # extract the time data
+    up.ramp.time<-dt*(0:delta) # produce respective time (in mins!)
+    slope<-data.frame(up.ramp.time, up.ramp); names(slope)[1] <- "time"; names(slope)[2] <- "intensity";
+    lmslope = lm(intensity~time, data = slope) # linear model
+    coeff<-lmslope$coefficients[2]                    # intensity gain per minute
+    coeff.poly<-1/(coeff/premRNA.int)                 # dt polymerases are reinitiated, i.e. time between polymerases
+    list.slopes<-rbind(list.slopes, coeff.poly)
+      absoluteBS <-ramp.maxima$Int_max.Int_min[k]     # it takes values here directly from ramp.maxima, hence they have to be updated there, line 435
+      list.absolute.burst.size <-rbind(list.absolute.burst.size, absoluteBS)
+        peak.frame <-ramp.maxima$MaximaTimeFrame[k]
+        list.max.location <- rbind(list.max.location, peak.frame)
+          list.delta <- rbind(list.delta, maxt)       # in mins
+    }
+    }
+  ## save up-ramps as .csv file with associated bursts:
+  list.slopes<-list.slopes[-1]                              # remove first empty line and save spacing between polymerases per burst as .csv
+  list.absolute.burst.size<-list.absolute.burst.size[-1]
+  list.max.location<-list.max.location[-1]
+  list.delta<-list.delta[-1]   
+  list.absolute.burst.size.transcripts<-as.integer(list.absolute.burst.size)/premRNA.int
+  
+  list.slopes<-data.frame(list.slopes, list.absolute.burst.size, list.absolute.burst.size.transcripts, list.max.location, list.delta) # for reinitiation vs. burst size
+  names(list.slopes)[1] <- "Polymerase_Initiated_Per_X(mins)"; names(list.slopes)[2] <- "Absolute_Burst_Size"; 
+  names(list.slopes)[3] <- "Absolute_Burst_Size(transcripts)"; names(list.slopes)[4] <- "Burst peak location(frame)";
+  names(list.slopes)[5] <- "ON-time_duration(mins))";
+  
+  
+  # After maxima relocation it is necessary to double check if the slope-candidate peak is still >2.5 transcripts. If not delete it from "slope"file:  #    Added on 26-11-2021:
+  list.slopes.checked <- ''
+  for (q in 1:nrow(list.slopes)){
+     peak<- list.slopes$`Burst peak location(frame)`[q]
+     peak <- as.numeric(levels(peak))[peak]         # or use: as.numeric(levels(peak))[q] ????? It does the same
+     respective.min <- list.slopes$`ON-time_duration(mins))`[q]
+     respective.min <- as.numeric(levels(respective.min))[respective.min]/4
+     respective.min <- peak - respective.min  # reset to actual respective minimum
+         if (trace[peak]-trace[respective.min]>2.5*premRNA.int){  # it was single.pre.mRNA now it is premRNA.int
+           list.slopes.checked <- rbind(list.slopes.checked, list.slopes[q,])
+          }
+  }
+ # if (length(list.slopes.checked == 1)){ # < this whole chunk is new 14-02-2022
+  #  write.csv(ramp.maxima, file = paste(subfolder.names[f],"/EMPTYTime_between_Pol2_reinitiation_inMins_perBurst.csv", sep=""))}else if (length(list.slopes.checked > 1)){  # ^^^^ 
+  list.slopes.checked <- list.slopes.checked[-1,]
+  
+ # below write list.slopes.checked, not list.slopes!!!!!!!
+  
+
+  write.csv(list.slopes.checked, file = paste(subfolder.names[f],"/Time_between_Pol2_reinitiation_inMins_perBurst.csv", sep="")) #}#^^^^
+      } # * * * if (ramp.maxima>0
+  }     # $ $ $ $ if maxima.final >0
+ }      # % % %  if maxima >0
+} # for iteration through subfolders
+} # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< for folders
+ 
+
+
+```
+
+

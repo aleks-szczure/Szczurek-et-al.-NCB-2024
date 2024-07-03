@@ -1,0 +1,139 @@
+---
+title: "anna"
+output: html_document
+---
+
+
+```{r}
+# SCRIPT 2/3
+#
+####### Script that stitches transcription intensity traces ########
+####################################################################
+## INPUT: folder with directories containing .csv files with intensity of detected spots (from FiJi SCRIPT 1/2), each .csv file represents one 3D time frame
+## OUTPUT: NAscent transcription intensity trajectory (.png plot + numerical data .csv) where TS is picked based on the distance to previously identified spot (in case of intensity conflict)
+## CAUTION: most common bug is when more than one nascent spots are detected in the first time-point. The algorithm does not know which one to follow. Inspect such instances manually and keep only the spot corresponding to nascent transcription. When more spots detected than one, the intnesity of the most intense spot will be indicated in red in the trajectory plot.
+
+#################################
+# Modify path and time interval first! 
+#Path corresponds to a folder containing single .tiff stack in single folders and the output of ImageJ SCRIPT 1/3
+path="C:/Results/MS2/MOVIES/DATA PROCESSING/20240509 R3/Experiment_tZ-Stack_20240509_16680"
+interval <- 4 #min
+library(readtext); library(gtools); library(ggplot2);
+#################################
+
+
+
+folder.names <- list.dirs(path, full.names = TRUE, recursive = FALSE)            # each folder is one cell/allele movie
+##########################################################
+for(k in 1:length(folder.names)){
+  out.file<-""            # empty list, to host each frames intensities,     emptying lists here ensures that all folders will be taken into account!
+  out.candidates<-""      # empty list for indicating highly intense spots that could be alternatives when >1 spots in FOV appear
+
+  file.names <- dir(folder.names[k], pattern ="min")
+  file.names <- mixedsort(sort(file.names))                                      # sorts file names in an ascending manner
+  folder <-folder.names[k]
+  
+  
+  #HERE CHECK IF THE FIRST FILE HAS MORE SPOTS THAN ONE 
+  file1 <- read.csv(paste(folder, "/", file.names[1], sep=""), header = TRUE, sep = ",")
+  if (nrow(file1)<=1){ #@@@@@@@@@@@@@@@
+  
+  
+    for(i in 1:length(file.names)){ # HERE CHANGE 1 TO ? >>>>>>>>>>>
+    #file <- read.delim(paste(folder, "/", file.names[i], sep=""), header = TRUE, sep = "", dec = ".") # paste() merges strings for full path, TXT
+      
+    file <- read.csv(paste(folder, "/", file.names[i], sep=""), header = TRUE, sep = ",")            # paste() merges strings for full path, CSV
+    #print(file.names[i])
+    
+
+      if (nrow(file)==0) {
+      Intdensity = 0
+      Candidate.Intdensity =0
+      } else if (nrow(file)==1) {
+        Intdensity=file$IntDen
+        Candidate.Intdensity =0
+      } else if (nrow(file)>1) {
+            # first read XYZ position of single spot in previous frame (i-1)
+            file.prev <- read.csv(paste(folder, "/", file.names[i-1], sep=""), header = TRUE, sep = ",")    # reads i-1 file, wont work if 2 spots found in the 1st frame!
+            
+               # HERE CONDITION IF PREVIOUS TIME-POINT HAD NO SPOTS -  UNTESTED!!!!!!!!!!! 
+                if (nrow(file.prev)==0){
+                list.dens <-file[,5]; max.row <- (which(list.dens==max(list.dens)))          # returns number of the row with maximum IntDens
+                Intdensity <- file[max.row,5]                                                # and attributes its intensity to the trace
+               } else { #- FOR CONDITION<<<<                                                 # if number of spots in prev frame >1 searches the closest:
+            
+  
+        previous.spot.no <- which(file.prev[, 5]==as.numeric(out.file[i,1]))  # number of previously picked molecule, its i instead i-1 due to differences in numbering
+
+        X1<-file.prev[previous.spot.no, 17]; Y1<-file.prev[previous.spot.no, 18]; Z1<-file.prev[previous.spot.no, 19]; # measures distance to identify prev molecule
+               
+               
+               ###### loop over spots in timeframe ######
+               ##########################################
+                    list.dist <-"" # empty list to introduce distances
+                    for (n in 1:nrow(file)){
+                
+                    X2 <- file[n, 17];
+                    Y2 <- file[n, 18];
+                    Z2 <- file[n, 19];
+               
+                    R<-sqrt( (X1-X2)^2 + (Y1-Y2)^2 + (Z1-Z2)^2)
+                    list.dist <- rbind(list.dist, R) # list.dist always attaches empty cell as the first cell so it needs to be removed:
+                     
+                    }
+            
+        
+              list.dist[1,1]=1000; # replaces first cell with insanely large distance
+               #min.row <- (which(list.dist==min(list.dist)))       # returns no. of row with minimum R distance
+               min.row <- (which(as.numeric(list.dist[2:length(list.dist),])==min(as.numeric(list.dist[2:length(list.dist),])))) # searches only for cells 2,3,4,.. (cells = ''), CAUTION: list.dist[2:length(list.dist),] causes some issues
+               
+               Intdensity <- file[min.row,5]                       # 5 stands for Intdens column
+               Candidate.Intdensity <- max(file[,5])
+               ###########################################
+                } #- FOR CONDITION<<<< -  UNTESTED!!!!!!!!!!!
+        
+             } else {Intdensity=NULL}                              # skips it otherwise - necessary?
+    
+    
+    
+    out.file <- rbind(out.file, Intdensity)
+    out.file2<-out.file[-1,]; out.file2 <- data.frame(out.file2);                # removes first row (empty), makes data.frame and renames column
+    names(out.file2)[1] <- "Intdensity"
+    #write.csv(out.file2, file = paste(folder.names[k], "/trace.csv", sep=""))   # saves full trace as .csv file
+    
+    basal_name=basename(folder.names[k])
+    write.csv(out.file2, file = paste(folder.names[k], "/", basal_name, "_trace.csv", sep=""))   # saves full trace as .csv file with specific name
+    
+    time<-data.frame(c(1:length(file.names)-1)); time<-time*interval; names(time)[1]<-"time"     # identify time-scale, define interval on top
+        
+        # makes a list of timepoints where >1 spots were find and returns IntDens of the most intense:
+        # this is important to rule out sudden decreases in trace intensity
+        out.candidates <- rbind(out.candidates, Candidate.Intdensity)
+        out.candidates2<-out.candidates[-1,]; out.candidates2 <- data.frame(out.candidates2);   # removes 1 row, makes data.frame, renames column
+        names(out.candidates2)[1] <- "Most.intense.candidate.when.multiple.spots.per.frame.present"
+        write.csv(out.candidates2, file = paste(folder.names[k], "/trace_candidates_withHighIntensity.csv", sep=""))
+        names(out.candidates2)[1] <- "Intdensity" # its required for plotting
+
+    }
+      ####################################################  
+      # Plot the cell trace and save it to its directory #    
+      trace <- data.frame(time, out.file2);  write.csv(trace, file = paste(folder.names[k], "/trace2.csv", sep="")) # SAVE
+      trace<-read.csv(file=paste(folder.names[k],"/trace2.csv", sep=""), header=TRUE, sep=",")                     # RELOAD, otherwise doesnt plot
+      p<- ggplot(data=trace, aes(x=time, y=Intdensity, group=1)) + geom_line(size=1)+geom_point(size=2) + geom_area(alpha=0.1)+theme_classic()+
+      labs(title="",x="Time (min)", y = "Transcription site intensity (a.u)")+  theme_classic() + expand_limits(y=c(0,25))+  theme(axis.text=element_text(size=15), axis.title=element_text(size=16))
+      
+      Cands <- data.frame(time, out.candidates2);  write.csv(Cands, file = paste(folder.names[k], "/Cands.csv", sep=""))
+      Cands<-read.csv(file=paste(folder.names[k],"/Cands.csv", sep=""), header=TRUE, sep=",")   # save and read most intense spot candidates
+      
+      p<-p+geom_point()+geom_point(data=Cands, color='brown1', size=1.25)   #add IntDen of most intense spot candidate to final trace graph
+      ggsave(p, filename = paste(basename(folder.names[k]),"_trace.png", sep=""), path = folder.names[k], height = 4, width = 8)  
+      ####################################################
+  }#@@@@@@@@@@@@@@@ continuation of the 1st frame condition
+  else {print("More than 1 spot in 1st frame! change it manually in 1st .csv file!")}
+    
+    
+  }
+##########################################################
+
+```
+
